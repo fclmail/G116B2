@@ -20,7 +20,7 @@
 </head>
 <body>
   <h1>DODO Flash Loan Arbitrage</h1>
-  <p><strong>Wallet:</strong> <span id="wallet"></span></p>
+  <p><strong>Wallet:</strong> <span id="wallet">-</span></p>
   <p><strong>Wallet USDC Balance:</strong> <span id="walletBalance">-</span></p>
   <p><strong>Contract USDC Balance:</strong> <span id="contractBalance">-</span></p>
   <div class="profit-display">
@@ -66,7 +66,6 @@
   </table>
   <div id="log"></div>
   <script>
-    let tradeBtn;
     let provider;
     let signer;
     let walletAddress;
@@ -292,6 +291,7 @@
     ];
 
     const ROUTER_ABI = [
+      // Placeholder for actual router ABI
       "function swapExactTokensForTokens(...) external returns (...)"
     ];
 
@@ -305,77 +305,25 @@
           document.getElementById("wallet").textContent = walletAddress;
           updateBalances();
         } catch (err) {
-          log("❌ Wallet connection failed.");
+          console.error("Wallet connection error:", err);
         }
       } else {
-        log("❌ MetaMask not found.");
+        alert("Please install MetaMask.");
       }
     });
 
     async function updateBalances() {
+      if (!provider || !signer || !walletAddress) return;
       try {
-        if (!provider || !signer || !walletAddress) {
-          log("⚠️ Wallet not connected.");
-          return;
-        }
-
-        const usdcWithProvider = new ethers.Contract(TOKEN_ADDRESSES.USDC, ERC20_ABI, provider);
-        const usdcWithSigner = new ethers.Contract(TOKEN_ADDRESSES.USDC, ERC20_ABI, signer);
-
-        const [contractUSDC, walletUSDC, decimals] = await Promise.all([
-          usdcWithProvider.balanceOf(contractAddress),
-          usdcWithSigner.balanceOf(walletAddress),
-          usdcWithProvider.decimals()
-        ]);
-
-        const format = (val) => ethers.utils.formatUnits(val, decimals);
-
-        document.getElementById("walletBalance").textContent = format(walletUSDC);
-        document.getElementById("contractBalance").textContent = format(contractUSDC);
-        log("✅ Balances updated.");
-      } catch (e) {
-        log("❌ Failed to load balances: " + e.message);
+        const usdc = new ethers.Contract(TOKEN_ADDRESSES.USDC, ERC20_ABI, signer);
+        const contractUSDC = await usdc.balanceOf(contractAddress);
+        const walletUSDC = await usdc.balanceOf(walletAddress);
+        const decimals = await usdc.decimals();
+        document.getElementById("walletBalance").textContent = ethers.utils.formatUnits(walletUSDC, decimals);
+        document.getElementById("contractBalance").textContent = ethers.utils.formatUnits(contractUSDC, decimals);
+      } catch (err) {
+        console.error("Balance fetch error:", err);
       }
-    }
-
-    async function executeTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
-      log(`Executing trade for ${symbol} with amount ${amountIn}`);
-      await updateBalances();
-    }
-
-    function log(message) {
-      const logDiv = document.getElementById("log");
-      logDiv.innerHTML += `• ${message}<br>`;
-      logDiv.scrollTop = logDiv.scrollHeight;
-    }
-
-    async function executeBatchTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
-      const batchCount = parseInt(document.getElementById("batchCount").value);
-      if (isNaN(batchCount) || batchCount < 1) {
-        log("⚠️ Invalid batch count.");
-        return;
-      }
-
-      log(`🚀 Starting batch trade of ${batchCount} iteration(s) for ${symbol}...`);
-
-      for (let i = 1; i <= batchCount; i++) {
-        log(`🔁 Batch iteration ${i}/${batchCount}...`);
-        try {
-          await executeTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct);
-        } catch (e) {
-          log(`⚠️ Batch iteration ${i} failed: ${e.message}`);
-          break;
-        }
-      }
-
-      log(`✅ Batch trade completed.`);
-    }
-
-    function assignTradeButton(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
-      tradeBtn = document.createElement("button");
-      tradeBtn.textContent = "Trade";
-      tradeBtn.onclick = () => executeBatchTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct);
-      return tradeBtn;
     }
   </script>
 </body>
