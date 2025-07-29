@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DODO Flash Loan Arbitrage</title>
+  <script src="https://cdn.jsdelivr.net/npm/ethers@5.7.2/dist/ethers.umd.min.js"></script>
+  <style>
+    body { background-color: #0a0; color: white; font-family: sans-serif; padding: 20px; }
+    table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+    th, td { padding: 8px 12px; border: 1px solid #444; text-align: center; }
+    .profitable { background-color: #00ff00; color: black; font-weight: bold; }
+    #log { max-height: 200px; overflow-y: auto; border: 1px solid #444; margin-top: 10px; padding: 10px; background: #111; }
+    button { padding: 8px 16px; margin: 5px; background: #333; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background: #555; }
+    .control-group { margin: 10px 0; display: flex; flex-wrap: wrap; align-items: center; gap: 15px; }
+    .control-group label { display: flex; align-items: center; gap: 5px; }
+    .profit-display { font-size: 1.2em; font-weight: bold; margin: 10px 0; padding: 8px; background: #333; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>DODO Flash Loan Arbitrage</h1>
+  <p><strong>Wallet:</strong> <span id="wallet"></span></p>
+  <p><strong>Wallet USDC Balance:</strong> <span id="walletBalance">-</span></p>
+  <p><strong>Contract USDC Balance:</strong> <span id="contractBalance">-</span></p>
+  <div class="profit-display">
+    <strong>Accumulated Profit:</strong> <span id="accumulatedProfit">0.00</span> USDC
+  </div>
+  <div class="control-group">
+    <button id="connectWallet">Connect Wallet</button>
+    <button id="scanNow">Scan Now</button>
+    <button id="withdrawUSDC">Withdraw USDC</button>
+    <button id="startScan">Start</button>
+    <button id="stopScan">Stop</button>
+    <button id="pauseScan">Pause</button>
+  </div>
+  <div class="control-group">
+    <label><input type="checkbox" id="autoTradeToggle"> Auto Trade</label>
+    <label><input type="checkbox" id="backgroundTradeToggle"> Auto Trade in Background</label>
+    <label><input type="checkbox" id="accumulateToggle"> Let profits accumulate in contract</label>
+    <label><input type="checkbox" id="positiveBalanceToggle" checked> Only trade if contract balance increases</label>
+  </div>
+  <div class="control-group">
+    <label>Min Profit %: <input type="number" id="minProfitPct" value="0.2" step="0.1" min="0.1">%</label>
+    <label>Trade Amount: <input type="number" id="tradeAmount" value="10" min="1"> USDC</label>
+    <label>Slippage %: <input type="number" id="slippagePct" value="0" step="0.1" min="0">%</label>
+  </div>
+  <div class="control-group">
+    <label>Batch Count: <input type="number" id="batchCount" value="1" min="1" step="1"> (Repeat Trade N Times)</label>
+  </div>
+  <table id="resultTable">
+    <thead>
+      <tr>
+        <th>Token</th>
+        <th>Buy Router</th>
+        <th>Sell Router</th>
+        <th>Buy Price</th>
+        <th>Sell Price</th>
+        <th>Profit $</th>
+        <th>Profit %</th>
+        <th>Status</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody id="results"></tbody>
+  </table>
+  <div id="log"></div>
+  <script>
+    let tradeBtn;
+    let provider;
+    let signer;
+    let walletAddress;
+
+    const TOKEN_ADDRESSES = {
+      USDC: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+      DAI: "0x6B175474E89094C44Da98b954EedeAC495271d0F",
+      WETH: "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2"
+    };
+
+    const ROUTERS = {
+      UNISWAP: "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+      SUSHISWAP: "0xd9e1CE17f2641f24aE83637ab66a2cca9C378B9F",
+      DODO: "0xa356867fDCEa8e71AEaF87805808803806231FdC"
+    };
+
+    const contractAddress = "0x98FA2A393Bf5C297FE29E160B244b560a61d9976";
+
+    const contractABI = [
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "buyRouter",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "sellRouter",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "token",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amountIn",
+				"type": "uint256"
+			},
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			},
+			{
+				"internalType": "string",
+				"name": "flashLoanProvider",
+				"type": "string"
+			}
+		],
+		"name": "executeArbitrage",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "asset",
+				"type": "address"
+			},
+			{
+				"internalType": "uint256",
+				"name": "amount",
+				"type": "uint256"
+			},
+			{
+				"internalType": "uint256",
+				"name": "premium",
+				"type": "uint256"
+			},
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			},
+			{
+				"internalType": "bytes",
+				"name": "params",
+				"type": "bytes"
+			}
+		],
+		"name": "executeOperation",
+		"outputs": [
+			{
+				"internalType": "bool",
+				"name": "",
+				"type": "bool"
+			}
+		],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "_aavePool",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "_usdc",
+				"type": "address"
+			},
+			{
+				"internalType": "address",
+				"name": "_aaveProvider",
+				"type": "address"
+			}
+		],
+		"stateMutability": "nonpayable",
+		"type": "constructor"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "newOwner",
+				"type": "address"
+			}
+		],
+		"name": "updateOwner",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "withdrawProfits",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [
+			{
+				"internalType": "address",
+				"name": "tokenAddress",
+				"type": "address"
+			}
+		],
+		"name": "withdrawToken",
+		"outputs": [],
+		"stateMutability": "nonpayable",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "AAVE_ADDRESS_PROVIDER",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "AAVE_POOL",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "getContractBalance",
+		"outputs": [
+			{
+				"internalType": "uint256",
+				"name": "",
+				"type": "uint256"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "owner",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	},
+	{
+		"inputs": [],
+		"name": "USDC",
+		"outputs": [
+			{
+				"internalType": "address",
+				"name": "",
+				"type": "address"
+			}
+		],
+		"stateMutability": "view",
+		"type": "function"
+	}
+];
+
+    const ERC20_ABI = [
+      "function balanceOf(address owner) view returns (uint256)",
+      "function approve(address spender, uint256 amount) external returns (bool)",
+      "function transfer(address to, uint amount) returns (bool)",
+      "function decimals() view returns (uint8)"
+    ];
+
+    const ROUTER_ABI = [
+      "function swapExactTokensForTokens(...) external returns (...)"
+    ];
+
+    document.getElementById("connectWallet").addEventListener("click", async () => {
+      if (window.ethereum) {
+        try {
+          await window.ethereum.request({ method: "eth_requestAccounts" });
+          provider = new ethers.providers.Web3Provider(window.ethereum);
+          signer = provider.getSigner();
+          walletAddress = await signer.getAddress();
+          document.getElementById("wallet").textContent = walletAddress;
+          updateBalances();
+        } catch (err) {
+          log("❌ Wallet connection failed.");
+        }
+      } else {
+        log("❌ MetaMask not found.");
+      }
+    });
+
+    async function updateBalances() {
+      try {
+        if (!provider || !signer || !walletAddress) {
+          log("⚠️ Wallet not connected.");
+          return;
+        }
+
+        const usdcWithProvider = new ethers.Contract(TOKEN_ADDRESSES.USDC, ERC20_ABI, provider);
+        const usdcWithSigner = new ethers.Contract(TOKEN_ADDRESSES.USDC, ERC20_ABI, signer);
+
+        const [contractUSDC, walletUSDC, decimals] = await Promise.all([
+          usdcWithProvider.balanceOf(contractAddress),
+          usdcWithSigner.balanceOf(walletAddress),
+          usdcWithProvider.decimals()
+        ]);
+
+        const format = (val) => ethers.utils.formatUnits(val, decimals);
+
+        document.getElementById("walletBalance").textContent = format(walletUSDC);
+        document.getElementById("contractBalance").textContent = format(contractUSDC);
+        log("✅ Balances updated.");
+      } catch (e) {
+        log("❌ Failed to load balances: " + e.message);
+      }
+    }
+
+    async function executeTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
+      log(`Executing trade for ${symbol} with amount ${amountIn}`);
+      await updateBalances();
+    }
+
+    function log(message) {
+      const logDiv = document.getElementById("log");
+      logDiv.innerHTML += `• ${message}<br>`;
+      logDiv.scrollTop = logDiv.scrollHeight;
+    }
+
+    async function executeBatchTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
+      const batchCount = parseInt(document.getElementById("batchCount").value);
+      if (isNaN(batchCount) || batchCount < 1) {
+        log("⚠️ Invalid batch count.");
+        return;
+      }
+
+      log(`🚀 Starting batch trade of ${batchCount} iteration(s) for ${symbol}...`);
+
+      for (let i = 1; i <= batchCount; i++) {
+        log(`🔁 Batch iteration ${i}/${batchCount}...`);
+        try {
+          await executeTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct);
+        } catch (e) {
+          log(`⚠️ Batch iteration ${i} failed: ${e.message}`);
+          break;
+        }
+      }
+
+      log(`✅ Batch trade completed.`);
+    }
+
+    function assignTradeButton(buyRouter, sellRouter, token, amountIn, symbol, profitPct) {
+      tradeBtn = document.createElement("button");
+      tradeBtn.textContent = "Trade";
+      tradeBtn.onclick = () => executeBatchTrade(buyRouter, sellRouter, token, amountIn, symbol, profitPct);
+      return tradeBtn;
+    }
+  </script>
+</body>
+</html>
